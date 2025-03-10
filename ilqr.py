@@ -11,11 +11,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax import tree_util
 
-
-def check_dir(dir : str) -> None :
-
-    if not os.path.exists(dir):
-        os.makedirs(dir)
+from utils import check_dir, cpu_time
 
 _dir = os.path.join("log", "ilqr", str(datetime.now()))
 check_dir(_dir)
@@ -315,6 +311,7 @@ def ensure_positive_definite(a, reg, max_reg = 1e20, eps = 1e-6):
     # debug_print("Chosen hessian regularization {}", chosen_delta/10)
     return a, chosen_reg
 
+@cpu_time
 def ricatti_step(
     current_step_dynamics : LinearDynamics, current_step_cost : QuadraticCost, current_inequality_constraints : QuadraticConstraints, current_equality_constraints : QuadraticConstraints, 
     next_state_value : QuadraticStateCost, lagrange_variables : LagrangeVariables, regularization : jnp.ndarray, opt_const : OptimizationConstants, approx_hessian : bool = False
@@ -423,7 +420,7 @@ def iterative_linear_quadratic_regulator(dynamics : Callable, total_cost : Calla
     opt_const_iterates = OptimizationConstants(
         jnp.maximum(jnp.array([ jnp.abs(_j_curr) / jnp.max(N, initial = 1.) / jnp.max(nh, initial = 1.) ]), 1.) if init_tau is None else jnp.array([init_tau]), # penalty factor
         jnp.zeros((1, N)), # regularization coefficient
-        jnp.zeros([1]), # alpha in line search 
+        jnp.zeros(1), # alpha in line search 
     )
 
     # current cost
@@ -452,12 +449,18 @@ def iterative_linear_quadratic_regulator(dynamics : Callable, total_cost : Calla
     hess_gt = jax.hessian(terminal_equality_constraints) 
 
     def continuation_criterion(loop_vars):
-        i, _, _, _, _, (j_curr, m_curr, inf_curr), *_, opt_const = loop_vars
+        i, _, _, _, _, (*_, inf_curr), *_, opt_const, _ = loop_vars
         return (i < maxiter) and (jnp.maximum(inf_curr, opt_const.tau) > atol)
         
     @jax.jit
     def ilqr_iteration(loop_vars):
-        i, xs, us, (hs, hst, gs, gst), (lagrange_variables, terminal_lagrange_variables), (j_curr, m_curr, inf_curr), cost_prev, value_functions_iterates, opt_const = loop_vars
+        (
+            i, xs, us, (hs, hst, gs, gst), 
+            (lagrange_variables, terminal_lagrange_variables), 
+            (j_curr, m_curr, inf_curr), 
+            cost_prev, value_functions_iterates, opt_const,
+            time_kktsolve
+        ) = loop_vars
         debug_print("Start of iteration {} -------------------------------------------------------------------------------------------", i)
 
         # running cost variables
@@ -498,17 +501,18 @@ def iterative_linear_quadratic_regulator(dynamics : Callable, total_cost : Calla
         # TODO implement last step inside the scan function
         def scan_fun(next_state_value, current_iterate):
             current_step_dynamics, current_step_inequality_constraints, current_step_equality_constraints, current_step_cost, current_lagrange_variables, current_regularization = current_iterate
-            current_state_value, current_step_optimal_policy, current_step_lagrange_policy, current_step_aux_data = ricatti_step(
+            (current_state_value, current_step_optimal_policy, current_step_lagrange_policy, current_step_aux_data), _time = ricatti_step(
                 current_step_dynamics, current_step_cost, current_step_inequality_constraints, current_step_equality_constraints, 
                 next_state_value, current_lagrange_variables, current_regularization, opt_const.tau, approx_hessian = approx_hessian
             )
-            return current_state_value, (current_state_value, current_step_optimal_policy, current_step_lagrange_policy, current_step_aux_data)
+            return current_state_value, (current_state_value, current_step_optimal_policy, current_step_lagrange_policy, current_step_aux_data, _time)
 
-        _, (value_functions, policy, lagrange_policy, aux_data) = jax.lax.scan(
+        _, (value_functions, policy, lagrange_policy, aux_data, _time) = jax.lax.scan(
             scan_fun, 
             quadratized_terminal_cost, 
             (linearized_dynamics, quadratized_inequality_constraints, quadratized_equality_constraints, quadratized_running_cost, lagrange_variables, opt_const.reg), reverse = True)
-
+        _time = jnp.sum(_time)
+        debug_print("Linear solve CPU time {}", _time)
 
         def step(x : Tuple, phi : float = 0.995):
 
@@ -662,7 +666,8 @@ def iterative_linear_quadratic_regulator(dynamics : Callable, total_cost : Calla
                 cost_new, 
                 (j_curr, m_curr, inf_curr),
                 value_functions_iterates,
-                opt_const_new
+                opt_const_new,
+                time_kktsolve + _time
             ]
         
         def _accept_new_loop_vars():
@@ -676,12 +681,13 @@ def iterative_linear_quadratic_regulator(dynamics : Callable, total_cost : Calla
                 cost_prev, 
                 (j_curr, m_curr, inf_curr),
                 value_functions_iterates,
-                opt_const_new
+                opt_const_new,
+                time_kktsolve + _time
             ]
         
         return jax.lax.cond(alpha > tol, accept_new_loop_vars, _accept_new_loop_vars)
 
-    loop_vars = (
+    loop_vars = [
         0, 
         xs_iterates[0], 
         us_iterates[0], 
@@ -690,8 +696,9 @@ def iterative_linear_quadratic_regulator(dynamics : Callable, total_cost : Calla
         (j_curr, m_curr, inf_curr), 
         (jnp.inf, jnp.inf, jnp.inf), 
         value_functions_iterates, 
-        opt_const_iterates[0]
-    )
+        opt_const_iterates[0],
+        0
+    ]
 
     debug_print("Start of optimization -------------------------------------------------------------------------------------------")
     while continuation_criterion(loop_vars):
@@ -700,9 +707,9 @@ def iterative_linear_quadratic_regulator(dynamics : Callable, total_cost : Calla
         # append new values
         (xs_iterates, us_iterates, 
             (hs_iterates, hst_iterates, gs_iterates, gst_iterates), (lagrange_iterates, terminal_lagrange_iterates), 
-            cost_iterates, opt_const_iterates) = tree_util.tree_map(lambda x, v : jnp.vstack((x, v[jnp.newaxis])), 
+            cost_iterates, opt_const_iterates) = tree_util.tree_map(lambda x, v : jnp.vstack((x, jnp.asarray(v)[jnp.newaxis])), 
                                                         (xs_iterates, us_iterates, (hs_iterates, hst_iterates, gs_iterates, gst_iterates), (lagrange_iterates, terminal_lagrange_iterates), cost_iterates, opt_const_iterates), 
-                                                        (*loop_vars[1:6], loop_vars[-1]))
+                                                        (*loop_vars[1:6], loop_vars[-2]))
 
     debug_print("End of optimization -------------------------------------------------------------------------------------------")
     return {
@@ -712,7 +719,8 @@ def iterative_linear_quadratic_regulator(dynamics : Callable, total_cost : Calla
         "trajectory_iterates" : (xs_iterates, us_iterates, (hs_iterates, hst_iterates, gs_iterates, gst_iterates), (lagrange_iterates, terminal_lagrange_iterates)),
         "cost_iterates" : cost_iterates,
         "values_functions_iterates" : value_functions_iterates,
-        "optimization_constants" : opt_const_iterates
+        "optimization_constants" : opt_const_iterates,
+        "timing" : loop_vars[-1],
     }
 
 
