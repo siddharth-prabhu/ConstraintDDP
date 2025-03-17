@@ -1,5 +1,7 @@
-from typing import NamedTuple, Callable
 import os
+from typing import NamedTuple, Callable
+import argparse
+from pprint import pformat
 
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -7,26 +9,34 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
-import scienceplots
 
 from ilqr import iterative_linear_quadratic_regulator, TotalCost, _dir, logger
+from utils import cpu_time, RK4Integrator
 
+iterative_linear_quadratic_regulator = cpu_time(iterative_linear_quadratic_regulator)
 
-skip_disp_test = False # skip displacement test ?
-skip_pend_test = False # skip inverted pendulum test ?
-skip_unicycle_test = False # skip obstacle test ?
-skip_parking_test = False # skip car parking test ?
-skip_obstacle_test = False # skip car obstacle test ?
-skip_quadrotor_test = True # skip quadrotor test ?
-skip_cstr_test = False # skip cstr test ?
+parser = argparse.ArgumentParser("ConstraintDDP")
+parser.add_argument("--skip_disp", type = int, choices = [0, 1], default = 1, help = "Skip displacement test ?") 
+parser.add_argument("--skip_pend", type = int, choices = [0, 1], default = 1, help = "Skip inverted pendulum test ?") 
+parser.add_argument("--skip_unicycle", type = int, choices = [0, 1], default = 1, help = "Skip unicycle test ?") 
+parser.add_argument("--skip_parking", type = int, choices = [0, 1], default = 1, help = "Skip car parking test ?") 
+parser.add_argument("--skip_obstacle", type = int, choices = [0, 1], default = 1, help = "Skip obstacle test ?") 
+parser.add_argument("--skip_quadrotor", type = int, choices = [0, 1], default = 1, help = "Skip quadrotor test ?") 
+parser.add_argument("--skip_cstr", type = int, choices = [0, 1], default = 1, help = "Skip CSTR test ?") 
 
-consider_equality = False # solve equality constraint optimization ? (default = inequality)
-atol = 1e-4 # tolerance
-approx_hessian = False
+parser.add_argument("--iters", type = int, default = 1000, help = "The maximum iterations")
+parser.add_argument("--nfactor", type = int, default = 1, help = "Multiplicative factor of control horizon")
+parser.add_argument("--atol", type = float, default = 1e-4)
+parser.add_argument("--approx_hessian", type = int, choices = [0, 1], default = 0)
+parser.add_argument("--msg", type = str, default = "", help = "Short message")
+parser.add_argument("--id", type = str, default = "", help = "Slurm job id")
+parser.add_argument("--partition", type = str, default = "", help = "The partition this job is assigned to")
+parser.add_argument("--cpus", type = str, default = "", help = "Maximum number of cpus availabe per node")
+pargs = parser.parse_args()
 
+logger.info(pformat(pargs.__dict__))
+logger.info("--"*50)
 
-msg = f"testing all with equality constraints as {consider_equality} and {atol} tolerance, with approx_hessian {approx_hessian}" # description of experiment
-logger.info(f"MSG : {msg}")
 
 def plot_results(solution : dict):
     
@@ -69,19 +79,7 @@ def plot_results(solution : dict):
     return ax
 
 
-class RK4Integrator(NamedTuple):
-    ode : Callable
-    dt : float
-
-    def __call__(self, x, u, k):
-        k1 = self.dt * self.ode(x, u)
-        k2 = self.dt * self.ode(x + k1/2, u)
-        k3 = self.dt * self.ode(x + k2/2, u)
-        k4 = self.dt * self.ode(x + k3, u)
-        return x + (k1 + 2*k3 + 2*k3 + k4)/6
-    
-
-if not skip_disp_test : # and consider_equality : 
+if not pargs.skip_disp : 
     
     # simple example from https://github.com/Bharath2/iLQR/tree/main
     logger.info("Started displacement test -------------------------------------------------------------------------------------------")
@@ -133,20 +131,22 @@ if not skip_disp_test : # and consider_equality :
             ])
         
 
+    N = 150 * pargs.nfactor
+    dt = 0.1 / pargs.nfactor
     x0 = jnp.array([0., 0.])
     key = jrandom.PRNGKey(seed = 10)
-    u_guess = 0.001*jrandom.randint(key, (150, 1), minval = -10, maxval = 10)
-    solution = iterative_linear_quadratic_regulator(
-            DisplacementExampleDynamics(), 
+    u_guess = 0.001 * jrandom.randint(key, (N, 1), minval = -10, maxval = 10)
+    solution, total_time = iterative_linear_quadratic_regulator(
+            DisplacementExampleDynamics(dt), 
             TotalCost.form_cost(
                 DisplacementExampleRunningCost(), 
-                terminal_cost = None if consider_equality else DisplacementExampleTerminalCost(), 
+                terminal_cost = None, 
                 running_inequality_constraints_cost = DisplacementExampleInequalityConstraints(),
                 terminal_inequality_constraints_cost = None,
                 running_equality_constraints_cost = None,
-                terminal_equality_constraints_cost = DisplacementExampleTerminalEqualityConstraints() if consider_equality else None
+                terminal_equality_constraints_cost = DisplacementExampleTerminalEqualityConstraints()
             ), 
-            x0, u_guess, maxiter = 200, atol = atol, tol = 1e-9, approx_hessian = approx_hessian
+            x0, u_guess, maxiter = pargs.iters, atol = pargs.atol, approx_hessian = pargs.approx_hessian
         )
 
     logger.info("-------------------------------------------------------------------------------------------")
@@ -154,13 +154,15 @@ if not skip_disp_test : # and consider_equality :
     _state = solution["optimal_trajectory"][0][-1]
     logger.info(f"inequality constraint infeasibility : {_inf}")
     logger.info(f"Terminal state : {_state}")
+    logger.info(f"Total LinearSolve cpu time : {solution['timing']}")
+    logger.info(f"Total Algorithm cpu time : {total_time}")
     logger.info("-------------------------------------------------------------------------------------------")
 
     ax = plot_results(solution)
     plt.savefig(os.path.join(_dir, "solution_displacement"))
     plt.close()
         
-if not skip_pend_test :
+if not pargs.skip_pend :
     
     # inverted pendulum example from https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9332234
     logger.info("Started inverted pendulum test -------------------------------------------------------------------------------------------")
@@ -183,12 +185,14 @@ if not skip_pend_test :
             return  self.q * jnp.sum(x**2) + self.r * jnp.sum(u**2) # scalar
 
 
+    """
     class PendulumExampleTerminalCost(NamedTuple):
         gain: float = 5.
         target: jnp.array = jnp.array([0., 0.])
 
         def __call__(self, x):
             return self.gain * jnp.sum(jnp.square(x - self.target)) # scalar
+    """
 
 
     class PendulumExampleInequalityConstraints(NamedTuple):
@@ -211,21 +215,22 @@ if not skip_pend_test :
             ])
         
 
+    N = 500 * pargs.nfactor
+    dt = 0.05 / pargs.nfactor
     x0 = jnp.array([-jnp.pi, 0.])
     key = jrandom.PRNGKey(seed = 5)
-    u_guess = 0.001*jrandom.randint(key, (500, 1), minval = -10, maxval = 10)
-    # u_guess = jnp.ones(shape = (500, 1))
-    solution = iterative_linear_quadratic_regulator(
-            PendulumExampleDynamics(), 
+    u_guess = 0.001 * jrandom.randint(key, (N, 1), minval = -10, maxval = 10)
+    solution, total_time = iterative_linear_quadratic_regulator(
+            PendulumExampleDynamics(dt), 
             TotalCost.form_cost(
                 PendulumExampleRunningCost(), 
-                terminal_cost = None if consider_equality else PendulumExampleTerminalCost(),
+                terminal_cost = None,
                 running_inequality_constraints_cost = PendulumExampleInequalityConstraints(),
                 terminal_inequality_constraints_cost = None,
                 running_equality_constraints_cost = None,
-                terminal_equality_constraints_cost = PendulumExampleTerminalEqualityConstraints() if consider_equality else None
+                terminal_equality_constraints_cost = PendulumExampleTerminalEqualityConstraints()
             ), 
-            x0, u_guess, maxiter = 300, atol = atol, approx_hessian = approx_hessian
+            x0, u_guess, maxiter = pargs.iters, atol = pargs.atol, approx_hessian = pargs.approx_hessian
         )
     
     logger.info("-------------------------------------------------------------------------------------------")
@@ -233,13 +238,15 @@ if not skip_pend_test :
     _state = solution["optimal_trajectory"][0][-1]
     logger.info(f"inequality constraint infeasibility : {_inf}")
     logger.info(f"Terminal state : {_state}")
+    logger.info(f"Total LinearSolve cpu time : {solution['timing']}")
+    logger.info(f"Total Algorithm cpu time : {total_time}")
     logger.info("-------------------------------------------------------------------------------------------")
 
     ax = plot_results(solution)
     plt.savefig(os.path.join(_dir, "solution_pendulum"))
     plt.close()
 
-if not (skip_unicycle_test or consider_equality) : # "Skipping equality constraints as the final states are not reachable"
+if not pargs.skip_unicycle : # "Skipping equality constraints as the final states are not reachable"
     
     # Unicycle motion control example from https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9332234
     logger.info("Started unicycle test -------------------------------------------------------------------------------------------")
@@ -286,21 +293,15 @@ if not (skip_unicycle_test or consider_equality) : # "Skipping equality constrai
 
         def __call__(self, x):
             return x.T @ self.q @ x
-        
 
-    class UnicycleExampleTerminalEqualityConstraints(NamedTuple):
-        # terminal equality constraints of the form g(x) = 0
-
-        def __call__(self, x):
-            return x
-
-
-    seed = 10
+    
+    N = 650 * pargs.nfactor
+    dt = 0.01 / pargs.nfactor
     x0 = jnp.array([-10, 0., 0])
-    key = jrandom.PRNGKey(seed = seed)
-    u_guess = 0.001*jrandom.randint(key, (650, 1), minval = -10, maxval = 10)
-    solution = iterative_linear_quadratic_regulator(
-            UnicycleExampleDynamics(), 
+    key = jrandom.PRNGKey(seed = 10)
+    u_guess = 0.001 * jrandom.randint(key, (N, 1), minval = -10, maxval = 10)
+    solution, total_time = iterative_linear_quadratic_regulator(
+            UnicycleExampleDynamics(dt), 
             TotalCost.form_cost(
                 UnicycleExampleRunningCost(), 
                 terminal_cost = UnicycleExampleTerminalCost(), 
@@ -309,7 +310,7 @@ if not (skip_unicycle_test or consider_equality) : # "Skipping equality constrai
                 running_equality_constraints_cost = None,
                 terminal_equality_constraints_cost = None
             ), 
-            x0, u_guess, maxiter = 500, atol = atol, approx_hessian = approx_hessian
+            x0, u_guess, maxiter = pargs.iters, atol = pargs.atol, approx_hessian = pargs.approx_hessian
         )
     
     logger.info("-------------------------------------------------------------------------------------------")
@@ -317,6 +318,8 @@ if not (skip_unicycle_test or consider_equality) : # "Skipping equality constrai
     _state = solution["optimal_trajectory"][0][-1]
     logger.info(f"inequality constraint infeasibility : {_inf}")
     logger.info(f"Terminal state : {_state}")
+    logger.info(f"Total LinearSolve cpu time : {solution['timing']}")
+    logger.info(f"Total Algorithm cpu time : {total_time}")
     logger.info("-------------------------------------------------------------------------------------------")
 
     ax = plot_results(solution)
@@ -335,7 +338,7 @@ if not (skip_unicycle_test or consider_equality) : # "Skipping equality constrai
     plt.savefig(os.path.join(_dir, "solution_unicycle"))
     plt.close()
 
-if not (consider_equality or skip_parking_test) : # "Skipping equality constraints as the final states are not reachable")
+if not pargs.skip_parking : # "Skipping equality constraints as the final states are not reachable")
 
     # Car parking example from https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9332234
     # https://homes.cs.washington.edu/~todorov/papers/TassaICRA14.pdf
@@ -382,26 +385,14 @@ if not (consider_equality or skip_parking_test) : # "Skipping equality constrain
                 -2 - u[1],
             ])
 
-
-    class CarParkingExampleTerminalEqualityConstraints(NamedTuple):
-        # terminal equality constraints of the form g(x) = 0
-        target : jnp.ndarray = jnp.array([.1, .1, 0.01, 1.])
-
-        def __call__(self, x):
-            return jnp.array([
-                x[0] - self.target[0],
-                x[1] - self.target[1],
-                x[2] - self.target[2],
-                x[3] - self.target[3]
-            ])
-
     
-    seed = 30
+    N = 500 * pargs.nfactor
+    dt = 0.03 / pargs.nfactor
     x0 = jnp.array([1, 1, 3*jnp.pi / 2, 0.])
-    key = jrandom.PRNGKey(seed)
-    u_guess = 0.1*jrandom.normal(key, (500, 2))
-    solution = iterative_linear_quadratic_regulator(
-            CarParkingExampleDynamics(), 
+    key = jrandom.PRNGKey(seed = 30)
+    u_guess = 0.1 * jrandom.normal(key, (N, 2))
+    solution, total_time = iterative_linear_quadratic_regulator(
+            CarParkingExampleDynamics(dt), 
             TotalCost.form_cost(
                 CarParkingExampleRunningCost(), 
                 terminal_cost = CarParkingExampleTerminalCost(), 
@@ -410,7 +401,7 @@ if not (consider_equality or skip_parking_test) : # "Skipping equality constrain
                 running_equality_constraints_cost = None,
                 terminal_equality_constraints_cost = None
             ), 
-            x0, u_guess, maxiter = 1000, atol = atol, approx_hessian = approx_hessian
+            x0, u_guess, maxiter = pargs.iters, atol = pargs.atol, approx_hessian = pargs.approx_hessian
         )
     
     logger.info("-------------------------------------------------------------------------------------------")
@@ -418,6 +409,8 @@ if not (consider_equality or skip_parking_test) : # "Skipping equality constrain
     _state = solution["optimal_trajectory"][0][-1]
     logger.info(f"constraint infeasibility : {_inf}")
     logger.info(f"Terminal state : {_state}")
+    logger.info(f"Total LinearSolve cpu time : {solution['timing']}")
+    logger.info(f"Total Algorithm cpu time : {total_time}")
     logger.info("-------------------------------------------------------------------------------------------")
 
     ax = plot_results(solution)
@@ -431,7 +424,7 @@ if not (consider_equality or skip_parking_test) : # "Skipping equality constrain
     plt.savefig(os.path.join(_dir, "solution_car_parking"))
     plt.close()
 
-if not (consider_equality or skip_obstacle_test ) : # "Skipping equality constraints as the final states are not reachable")
+if not pargs.skip_obstacle : # "Skipping equality constraints as the final states are not reachable")
     
     # https://github.com/ZhaomingXie/CDDP/blob/master/optimize_car.py
     # https://arxiv.org/pdf/2005.00985
@@ -482,24 +475,14 @@ if not (consider_equality or skip_obstacle_test ) : # "Skipping equality constra
             ])
 
 
-    class CarObstacleExampleTerminalEqualityConstraints(NamedTuple):
-        # terminal equality constraints of the form g(x) = 0
-        target : jnp.ndarray = jnp.array([3., 3., jnp.pi / 2, 0.])
-
-        def __call__(self, x):
-            return jnp.array([
-                x[0] - self.target[0],
-                x[1] - self.target[1],
-            ])
-
-
-    seed = 40
+    N = 200 * pargs.nfactor
+    dt = 0.05 / pargs.nfactor
     x0 = jnp.array([0., 0., 0., 0.])
-    key = jrandom.PRNGKey(seed)
-    u_guess = 0.001*jrandom.randint(key, (200, 2), minval = -10, maxval = 10)
+    key = jrandom.PRNGKey(seed = 40)
+    u_guess = 0.001 * jrandom.randint(key, (N, 2), minval = -10, maxval = 10)
     
-    solution = iterative_linear_quadratic_regulator(
-            CarObstacleExampleDynamics(), 
+    solution, total_time = iterative_linear_quadratic_regulator(
+            CarObstacleExampleDynamics(dt), 
             TotalCost.form_cost(
                 CarObstacleExampleRunningCost(), 
                 terminal_cost = CarObstacleExampleTerminalCost(), 
@@ -508,7 +491,7 @@ if not (consider_equality or skip_obstacle_test ) : # "Skipping equality constra
                 running_equality_constraints_cost = None,
                 terminal_equality_constraints_cost = None
             ), 
-            x0, u_guess, maxiter = 600, atol = atol, approx_hessian = approx_hessian
+            x0, u_guess, maxiter = pargs.iters, atol = pargs.atol, approx_hessian = pargs.approx_hessian
         )
     
     logger.info("-------------------------------------------------------------------------------------------")
@@ -516,6 +499,8 @@ if not (consider_equality or skip_obstacle_test ) : # "Skipping equality constra
     _state = solution["optimal_trajectory"][0][-1]
     logger.info(f"inequality constraint infeasibility : {_inf}")
     logger.info(f"Terminal state : {_state}")
+    logger.info(f"Total LinearSolve cpu time : {solution['timing']}")
+    logger.info(f"Total Algorithm cpu time : {total_time}")
     logger.info("-------------------------------------------------------------------------------------------")
 
     ax = plot_results(solution)
@@ -534,7 +519,7 @@ if not (consider_equality or skip_obstacle_test ) : # "Skipping equality constra
     plt.savefig(os.path.join(_dir, "solution_car_obstacle"))
     plt.close()
 
-if not skip_quadrotor_test : # Have not tested yet 
+if not pargs.skip_quadrotor : # Have not tested yet 
     
     # quadrotor example from https://github.com/ZhaomingXie/CDDP/blob/master/systems.py
     # https://zhaomingxie.github.io/projects/CDDP/CDDP.pdf
@@ -610,31 +595,22 @@ if not skip_quadrotor_test : # Have not tested yet
             ])
 
 
-    class QuadrotorExampleTerminalEqualityConstraints(NamedTuple):
-        # terminal equality constraints of the form g(x) = 0
-        target : jnp.ndarray = jnp.array([3., 3., jnp.pi / 2, 0.])
-
-        def __call__(self, x):
-            return jnp.array([
-            ])
-
-
     seed = 40
     x0 = jnp.array([-3.5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
     key = jrandom.PRNGKey(seed)
     u_guess = 0.001*jrandom.randint(key, (200, 4), minval = -10, maxval = 10)
     
-    solution = iterative_linear_quadratic_regulator(
+    solution, total_time = iterative_linear_quadratic_regulator(
             QuadrotorExampleDynamics(), 
             TotalCost.form_cost(
                 QuadrotorExampleRunningCost(), 
-                terminal_cost = lambda x : 50. * (x[-2] - jnp.pi / 2)**2 + 10 * (x[-1] - 0.)**2 if consider_equality else QuadrotorExampleTerminalCost(), 
+                terminal_cost = QuadrotorExampleTerminalCost(), 
                 running_inequality_constraints_cost = QuadrotorExampleInequalityConstraints(),
                 terminal_inequality_constraints_cost = None, 
                 running_equality_constraints_cost = None,
-                terminal_equality_constraints_cost = QuadrotorExampleTerminalEqualityConstraints() if consider_equality else None
+                terminal_equality_constraints_cost = None
             ), 
-            x0, u_guess, maxiter = 600, atol = atol
+            x0, u_guess, maxiter = 600, atol = pargs.atol
         )
     
     
@@ -654,7 +630,7 @@ if not skip_quadrotor_test : # Have not tested yet
     plt.savefig("solution_quadrotor")
     plt.close()
 
-if (not skip_cstr_test) and consider_equality :
+if not pargs.skip_cstr :
     
     # cstr example from https://jckantor.github.io/CBE30338/04.11-Implementing-PID-Control-in-Nonlinear-Simulations.html
     # other similar examples can be taken from https://www.do-mpc.com/en/latest/example_gallery/CSTR.html
@@ -698,13 +674,14 @@ if (not skip_cstr_test) and consider_equality :
             return (x - jnp.array([0., 390, 0.])).T @ self.q @ (x - jnp.array([0., 390, 0.])) + u.T @ self.r @ u
 
 
+    """
     class CstrExampleTerminalCost(NamedTuple):
         q : jnp.ndarray = jnp.diag(jnp.array([0., 50., 0.]))
         target : jnp.ndarray = jnp.array([0, 390, 0.])
 
         def __call__(self, x):
             return (x - self.target).T @ self.q @ (x - self.target)
-
+    """
 
     class CstrExampleInequalityConstraints(NamedTuple):
         # inequality constraints of the form h(x, u) <= 0
@@ -726,22 +703,23 @@ if (not skip_cstr_test) and consider_equality :
             ])
 
 
-    seed = 40
+    N = 400 * pargs.nfactor
+    dt = 0.01 / pargs.nfactor
     x0 = jnp.array([0.5, 350, 300.])
-    key = jrandom.PRNGKey(seed)
-    u_guess = 150 * jnp.ones(shape = (400, 1))
+    key = jrandom.PRNGKey(seed = 40)
+    u_guess = 150 * jnp.ones(shape = (N, 1))
 
-    solution = iterative_linear_quadratic_regulator(
-            RK4Integrator(CstrExampleDynamics(), dt = 0.01), 
+    solution, total_time = iterative_linear_quadratic_regulator(
+            RK4Integrator(CstrExampleDynamics(), dt), 
             TotalCost.form_cost(
                 CstrExampleRunningCost(), 
-                terminal_cost = None if consider_equality else CstrExampleTerminalCost(), 
+                terminal_cost = None, 
                 running_inequality_constraints_cost = CstrExampleInequalityConstraints(),
                 terminal_inequality_constraints_cost = None, 
                 running_equality_constraints_cost = None,
-                terminal_equality_constraints_cost = CstrExampleTerminalEqualityConstraints() if consider_equality else None
+                terminal_equality_constraints_cost = CstrExampleTerminalEqualityConstraints()
             ), 
-            x0, u_guess, maxiter = 500, atol = atol, approx_hessian = approx_hessian
+            x0, u_guess, maxiter = pargs.iters, atol = pargs.atol, approx_hessian = pargs.approx_hessian
         )
     
     logger.info("-------------------------------------------------------------------------------------------")
@@ -749,6 +727,8 @@ if (not skip_cstr_test) and consider_equality :
     _state = solution["optimal_trajectory"][0][-1]
     logger.info(f"inequality constraint infeasibility : {_inf}")
     logger.info(f"Terminal state : {_state}")
+    logger.info(f"Total LinearSolve cpu time : {solution['timing']}")
+    logger.info(f"Total Algorithm cpu time : {total_time}")
     logger.info("-------------------------------------------------------------------------------------------")
 
     ax = plot_results(solution)
