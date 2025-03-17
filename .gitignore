@@ -1,0 +1,8 @@
+__pycache__
+
+/log
+*.png
+*.txt
+rough*
+*.sh
+slurm*
