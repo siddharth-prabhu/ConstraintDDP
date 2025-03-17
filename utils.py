@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -23,3 +23,15 @@ def cpu_time(afunc : Callable):
         return sol, end - start
     
     return _cpu_time
+
+class RK4Integrator(NamedTuple):
+    ode : Callable
+    dt : float
+
+    def __call__(self, x, u, k = None):
+        k1 = self.dt * self.ode(x, u)
+        k2 = self.dt * self.ode(x + k1/2, u)
+        k3 = self.dt * self.ode(x + k2/2, u)
+        k4 = self.dt * self.ode(x + k3, u)
+        return x + (k1 + 2*k3 + 2*k3 + k4)/6
+    
