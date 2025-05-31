@@ -17,3 +17,17 @@ git clone https://github.com/siddharth-prabhu/ConstraintDDP.git
 cd ConstraintDDP
 python ilqr.py
 ```
+
+## Citation
+
+If you found this code useful in academic research, please cite:
+
+```bibtex
+@article{prabhu2024differential,
+  title={Differential dynamic programming with stagewise equality and inequality constraints using interior point method},
+  author={Prabhu, Siddharth and Rangarajan, Srinivas and Kothare, Mayuresh},
+  journal={arXiv preprint arXiv:2409.12048},
+  year={2024}
+}
+```
+
