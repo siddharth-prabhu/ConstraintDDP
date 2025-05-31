@@ -13,7 +13,7 @@ This project is based on our paper (https://arxiv.org/abs/2409.12048)
 Clone the repository:
 
 ```
-git clone (https://github.com/siddharth-prabhu/ConstraintDDP.git)
+git clone https://github.com/siddharth-prabhu/ConstraintDDP.git
 cd ConstraintDDP
 python ilqr.py
 ```
