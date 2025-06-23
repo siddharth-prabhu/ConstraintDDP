@@ -15,7 +15,9 @@ Clone the repository:
 ```
 git clone https://github.com/siddharth-prabhu/ConstraintDDP.git
 cd ConstraintDDP
-python ilqr.py
+
+# Run CSTR example
+python ilqr_examples.py --skip_cstr 0
 ```
 
 ## Citation
