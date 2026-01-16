@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
 from ilqr import iterative_linear_quadratic_regulator, TotalCost, _dir, logger
-from utils import cpu_time, RK4Integrator
+from utils import cpu_time, RK4Integrator, wall_time
 
 iterative_linear_quadratic_regulator = cpu_time(iterative_linear_quadratic_regulator)
 
@@ -60,7 +60,7 @@ def plot_results(solution : dict):
         ax[0, 2].set(xlabel = "Horizon", ylabel = "States")
         ax[0, 2].legend([f"x{i}" for i in range(opt_traj.shape[-1])])
         
-        # plotting inequality constraint infeasibility
+        # plotting summation of inequality constraint infeasibility |h + s|_1
         ax[1, 0].plot(solution["cost_iterates"][2], "o-")
         ax[1, 0].set(yscale = "log", xlabel = "Iterations", ylabel = "Constraint infeasibility")
         

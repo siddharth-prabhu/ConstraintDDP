@@ -11,7 +11,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax import tree_util
 
-from utils import check_dir, cpu_time
+from utils import check_dir, cpu_time, wall_time
 
 _dir = os.path.join("log", "ilqr", str(datetime.now()))
 check_dir(_dir)

@@ -24,6 +24,17 @@ def cpu_time(afunc : Callable):
     
     return _cpu_time
 
+def wall_time(afunc : Callable):
+    # Get Wall time of decorated functions 
+    # Time the scan function in jax.lax.scan and sum the times. Dont time jax.lax.scan directly   
+    def _wall_time(*args, **kwargs):
+        start = jax.experimental.io_callback(lambda : jnp.array(time.time()), jax.ShapeDtypeStruct((), jnp.dtype("float64")), ordered = True)
+        sol = jax.block_until_ready(afunc(*args, **kwargs))
+        end = jax.experimental.io_callback(lambda : jnp.array(time.time()), jax.ShapeDtypeStruct((), jnp.dtype("float64")), ordered = True)
+        return sol, end - start
+    
+    return _wall_time
+
 class RK4Integrator(NamedTuple):
     ode : Callable
     dt : float
