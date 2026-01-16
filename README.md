@@ -25,11 +25,13 @@ python ilqr_examples.py --skip_cstr 0
 If you found this code useful in academic research, please cite:
 
 ```bibtex
-@article{prabhu2024differential,
+@inproceedings{prabhu2025differential,
   title={Differential dynamic programming with stagewise equality and inequality constraints using interior point method},
   author={Prabhu, Siddharth and Rangarajan, Srinivas and Kothare, Mayuresh},
-  journal={arXiv preprint arXiv:2409.12048},
-  year={2024}
+  booktitle={2025 American Control Conference (ACC)},
+  pages={2255--2261},
+  year={2025},
+  organization={IEEE}
 }
 ```
 
